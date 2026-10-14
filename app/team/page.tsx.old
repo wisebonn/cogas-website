@@ -1,0 +1,1149 @@
+"use client";
+
+import { useState, useEffect, useRef } from "react";
+import { supabase } from "@/lib/supabaseClient";
+import { useRouter } from "next/navigation";
+
+const COLS = [
+  { key: 'pending_approval', label: '⏳ Awaiting Approval', color: '#fbbf24' },
+  { key: 'todo', label: '📋 To Do', color: '#60a5fa' },
+  { key: 'in_progress', label: '⚙️ In Progress', color: '#a3e635' },
+  { key: 'in_review', label: '🔍 In Review', color: '#c4b5fd' },
+  { key: 'complete', label: '✅ Complete', color: '#4ade80' },
+];
+
+const DEPARTMENTS = ['Agro-Econ', 'Actuarial', 'Marketing', 'Engineering', 'Logistics', 'Finance'];
+const MAX_FILE_SIZE = 25 * 1024 * 1024;
+const ALLOWED_EXT = ['pdf','doc','docx','xls','xlsx','ppt','pptx','png','jpg','jpeg','zip','csv','txt'];
+
+// Timezones for dual display
+const TIMEZONES = [
+  { label: 'EAT (Nairobi)', tz: 'Africa/Nairobi' },
+  { label: 'GMT (London)', tz: 'Europe/London' },
+  { label: 'EST (New York)', tz: 'America/New_York' },
+];
+
+export default function TeamPortal() {
+  const router = useRouter();
+  const [loading, setLoading] = useState(true);
+  const [isApproved, setIsApproved] = useState(false);
+  const [userEmail, setUserEmail] = useState("");
+  const [userId, setUserId] = useState("");
+  const [userRole, setUserRole] = useState("member");
+  const [isApprover, setIsApprover] = useState(false);
+  const [activeView, setActiveView] = useState("dash");
+  const [toastMsg, setToastMsg] = useState("");
+  const [dateLine, setDateLine] = useState("");
+  const [clockTz, setClockTz] = useState(0);
+
+  // Clock state
+  const [clockedIn, setClockedIn] = useState(false);
+  const [timeSecs, setTimeSecs] = useState(0);
+  const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
+  const [sessions, setSessions] = useState<any[]>([]);
+
+  const [tasks, setTasks] = useState<any[]>([]);
+  const [notes, setNotes] = useState<Record<string, any[]>>({});
+  const [documents, setDocuments] = useState<Record<string, any[]>>({});
+  const [teamMembers, setTeamMembers] = useState<any[]>([]);
+  const [taskFilter, setTaskFilter] = useState<'mine' | 'all' | 'urgent' | 'attention'>('all');
+  const [selectedProject, setSelectedProject] = useState<string | null>(null);
+
+  // Notifications
+  const [notifications, setNotifications] = useState<any[]>([]);
+  const [showNotifPanel, setShowNotifPanel] = useState(false);
+  const notifRef = useRef<HTMLDivElement>(null);
+
+  const [showNewTask, setShowNewTask] = useState(false);
+  const [newTask, setNewTask] = useState({
+    title: '', description: '', deliverables: '', success_criteria: '',
+    assignee_email: '', assignee_name: '', department: 'Agro-Econ',
+    proposed_days: 3, priority: 'normal', task_type: 'admin', project_name: ''
+  });
+
+  const [noteTask, setNoteTask] = useState<any>(null);
+  const [noteText, setNoteText] = useState("");
+
+  // Document upload
+  const [showDocUpload, setShowDocUpload] = useState(false);
+  const [docTask, setDocTask] = useState<any>(null);
+  const [docTaskId, setDocTaskId] = useState("");
+  const [docFile, setDocFile] = useState<File | null>(null);
+  const [docUploading, setDocUploading] = useState(false);
+
+  const [approveModal, setApproveModal] = useState<any>(null);
+  const [approveDays, setApproveDays] = useState("");
+
+  // ---------- AUTH ----------
+  useEffect(() => {
+    const check = async () => {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session) { router.push("/login"); return; }
+      setUserEmail(session.user.email || "");
+      setUserId(session.user.id);
+
+      const { data: profile } = await supabase
+        .from('profiles')
+        .select('is_approved, role')
+        .eq('id', session.user.id)
+        .single();
+
+      setIsApproved(!!(profile?.is_approved));
+      setUserRole(profile?.role || 'member');
+      setIsApprover(['chair','cochair'].includes(profile?.role || ''));
+      setLoading(false);
+    };
+    check();
+  }, [router]);
+
+  // ---------- CLOCK-IN ----------
+  const loadClockState = async () => {
+    const { data: openSession } = await supabase
+      .from('clock_sessions')
+      .select('*')
+      .eq('user_id', userId)
+      .is('clock_out_at', null)
+      .order('clock_in_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    if (openSession) {
+      setClockedIn(true);
+      setActiveSessionId(openSession.id);
+      const elapsed = Math.floor((Date.now() - new Date(openSession.clock_in_at).getTime()) / 1000);
+      setTimeSecs(elapsed > 0 ? elapsed : 0);
+    } else {
+      setClockedIn(false);
+      setActiveSessionId(null);
+      setTimeSecs(0);
+    }
+
+    const { data: recent } = await supabase
+      .from('clock_sessions')
+      .select('*')
+      .eq('user_id', userId)
+      .order('clock_in_at', { ascending: false })
+      .limit(10);
+    setSessions(recent || []);
+  };
+
+  const toggleClock = async () => {
+    if (clockedIn && activeSessionId) {
+      const totalSecs = timeSecs;
+      const { error } = await supabase.from('clock_sessions').update({
+        clock_out_at: new Date().toISOString(),
+        total_seconds: totalSecs
+      }).eq('id', activeSessionId);
+
+      if (!error) {
+        setClockedIn(false);
+        setActiveSessionId(null);
+        setTimeSecs(0);
+        showToast(`Clocked out — session ${fmt(totalSecs)} saved ✓`);
+        loadClockState();
+      } else {
+        showToast('Error clocking out: ' + error.message);
+      }
+    } else {
+      const { data, error } = await supabase.from('clock_sessions').insert({
+        user_id: userId,
+        user_email: userEmail,
+        clock_in_at: new Date().toISOString()
+      }).select().single();
+
+      if (!error && data) {
+        setClockedIn(true);
+        setActiveSessionId(data.id);
+        setTimeSecs(0);
+        showToast('Clocked in — session started 👋');
+      } else {
+        showToast('Error clocking in: ' + (error?.message || 'unknown'));
+      }
+    }
+  };
+
+  // ---------- DATA ----------
+  const fetchAll = async () => {
+    const { data: t } = await supabase.from('tasks').select('*').order('created_at', { ascending: false });
+    if (t) {
+      for (const task of t) {
+        if (task.status === 'in_progress' && task.started_at && task.estimated_days && !task.needs_attention) {
+          const elapsedMs = Date.now() - new Date(task.started_at).getTime();
+          const totalMs = task.estimated_days * 24 * 60 * 60 * 1000;
+          const remainingPct = (totalMs - elapsedMs) / totalMs;
+          if (remainingPct <= 0.3) {
+            await supabase.from('tasks').update({ needs_attention: true }).eq('id', task.id);
+            task.needs_attention = true;
+            await supabase.from('task_notes').insert({
+              task_id: task.id, author_email: 'system',
+              note: `🚨 AUTO-ALERT: Only 30% of estimated time remains. Management notified.`
+            });
+            await createNotification(task.assignee_email, 'attention', 'Task needs attention', `${task.title} is running low on time.`, task.id);
+          }
+        }
+      }
+      setTasks(t);
+    }
+
+    const { data: n } = await supabase.from('task_notes').select('*').order('created_at', { ascending: true });
+    if (n) { const g: Record<string, any[]> = {}; n.forEach(x => { (g[x.task_id] ||= []).push(x); }); setNotes(g); }
+
+    const { data: d } = await supabase.from('task_documents').select('*').order('created_at', { ascending: true });
+    if (d) { const g: Record<string, any[]> = {}; d.forEach(x => { (g[x.task_id] ||= []).push(x); }); setDocuments(g); }
+
+    const { data: p } = await supabase.from('profiles').select('id,email,role,full_name').eq('is_approved', true);
+    if (p) setTeamMembers(p);
+
+    // Load notifications
+    const { data: notifs } = await supabase
+      .from('notifications')
+      .select('*')
+      .eq('user_email', userEmail)
+      .order('created_at', { ascending: false })
+      .limit(20);
+    setNotifications(notifs || []);
+  };
+
+  useEffect(() => { if (isApproved && userId) { fetchAll(); loadClockState(); } }, [isApproved, userId]);
+
+  useEffect(() => {
+    let i: NodeJS.Timeout;
+    if (clockedIn) i = setInterval(() => setTimeSecs(s => s + 1), 1000);
+    return () => clearInterval(i);
+  }, [clockedIn]);
+
+  useEffect(() => {
+    setDateLine(new Date().toLocaleDateString('en-KE', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' }));
+  }, []);
+
+  // Rotate timezone display every 5s
+  useEffect(() => {
+    const i = setInterval(() => setClockTz(p => (p + 1) % TIMEZONES.length), 5000);
+    return () => clearInterval(i);
+  }, []);
+
+  // Close notif panel on outside click
+  useEffect(() => {
+    const handler = (e: MouseEvent) => {
+      if (notifRef.current && !notifRef.current.contains(e.target as Node)) setShowNotifPanel(false);
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, []);
+
+  // ---------- HELPERS ----------
+  const showToast = (m: string) => { setToastMsg(m); setTimeout(() => setToastMsg(""), 3000); };
+
+  const fmt = (s: number) => `${String(Math.floor(s/3600)).padStart(2,'0')}:${String(Math.floor(s%3600/60)).padStart(2,'0')}:${String(s%60).padStart(2,'0')}`;
+  const fmtHrs = (s: number) => s ? `${(s/3600).toFixed(2)} hrs` : '---';
+  const fmtSize = (bytes?: number | null) => {
+    if (bytes === undefined || bytes === null) return '---';
+    if (bytes < 1024) return bytes + ' B';
+    if (bytes < 1024*1024) return (bytes/1024).toFixed(1) + ' KB';
+    return (bytes/(1024*1024)).toFixed(1) + ' MB';
+  };
+
+  const fmtInTz = (date: Date, tz: string) => {
+    try {
+      return date.toLocaleTimeString('en-GB', { timeZone: tz, hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    } catch { return '---'; }
+  };
+
+  const createNotification = async (email: string, type: string, title: string, message: string, taskId?: string) => {
+    if (!email) return;
+    await supabase.from('notifications').insert({
+      user_email: email, type, title, message, task_id: taskId || null, read: false
+    });
+    // Email via edge function (fire-and-forget)
+    try {
+      await supabase.functions.invoke('send-notification-email', {
+        body: { to: email, subject: title, message, taskId }
+      });
+    } catch (e) { /* silent — email optional */ }
+  };
+
+  const markNotifRead = async (id: string) => {
+    await supabase.from('notifications').update({ read: true }).eq('id', id);
+    setNotifications(prev => prev.map(n => n.id === id ? { ...n, read: true } : n));
+  };
+
+  const markAllRead = async () => {
+    await supabase.from('notifications').update({ read: true }).eq('user_email', userEmail).eq('read', false);
+    setNotifications(prev => prev.map(n => ({ ...n, read: true })));
+  };
+
+  const remainingInfo = (task: any) => {
+    if (!task.started_at || !task.estimated_days) return null;
+    const elapsedMs = Date.now() - new Date(task.started_at).getTime();
+    const totalMs = task.estimated_days * 24 * 60 * 60 * 1000;
+    const remainMs = totalMs - elapsedMs;
+    const pct = Math.max(0, Math.min(100, (remainMs / totalMs) * 100));
+    const days = Math.floor(remainMs / (24*60*60*1000));
+    const hours = Math.floor((remainMs % (24*60*60*1000)) / (60*60*1000));
+    return { pct, label: remainMs <= 0 ? 'Overdue' : `${days}d ${hours}h left`, overdue: remainMs <= 0, remainMs };
+  };
+
+  const getUrgency = (task: any) => {
+    if (task.status === 'complete') return null;
+    if (!task.due_at && !task.started_at) {
+      if (task.priority === 'urgent') return 'overdue';
+      if (task.priority === 'high') return 'high';
+      return null;
+    }
+    const due = task.due_at ? new Date(task.due_at).getTime() : null;
+    if (!due) return task.priority === 'urgent' ? 'overdue' : null;
+    const remainMs = due - Date.now();
+    const hours = remainMs / (1000 * 60 * 60);
+    if (remainMs < 0) return 'overdue';
+    if (hours < 24) return 'today';
+    if (hours < 72) return 'soon';
+    return null;
+  };
+
+  const sortByUrgency = (list: any[]) => {
+    const order: Record<string, number> = { overdue: 0, today: 1, soon: 2, high: 3 };
+    return [...list].sort((a, b) => {
+      const ua = getUrgency(a) || 'z'; const ub = getUrgency(b) || 'z';
+      const oa = order[ua] ?? 99; const ob = order[ub] ?? 99;
+      if (oa !== ob) return oa - ob;
+      const ra = a.due_at ? new Date(a.due_at).getTime() : Infinity;
+      const rb = b.due_at ? new Date(b.due_at).getTime() : Infinity;
+      return ra - rb;
+    });
+  };
+
+  // ---------- ACTIONS ----------
+  const createTask = async () => {
+    if (!newTask.title.trim()) return showToast('Title is required');
+    if (!newTask.assignee_email) return showToast('Please assign this task to someone');
+    if (newTask.task_type === 'project' && !newTask.project_name.trim()) return showToast('Project name is required');
+
+    const member = teamMembers.find(m => m.email === newTask.assignee_email);
+    const myName = teamMembers.find(m => m.email === userEmail)?.full_name || userEmail;
+
+    await supabase.from('tasks').insert({
+      title: newTask.title, description: newTask.description,
+      deliverables: newTask.deliverables, success_criteria: newTask.success_criteria,
+      assignee_email: newTask.assignee_email,
+      assignee_name: member?.full_name || member?.email || newTask.assignee_email,
+      department: newTask.department,
+      proposed_days: Number(newTask.proposed_days), priority: newTask.priority,
+      task_type: newTask.task_type,
+      project_name: newTask.task_type === 'project' ? newTask.project_name : null,
+      created_by: userEmail, created_by_name: myName, status: 'pending_approval'
+    });
+
+    await createNotification(newTask.assignee_email, 'task_assigned', 'New task assigned', `${newTask.title} — awaiting approval.`);
+    if (isApprover) {
+      // notify other approvers if creator is not approver — skip if self
+    } else {
+      const approvers = teamMembers.filter(m => ['chair','cochair'].includes(m.role));
+      for (const a of approvers) {
+        await createNotification(a.email, 'approval_needed', 'Task awaiting approval', `${newTask.title} by ${myName}`);
+      }
+    }
+
+    setShowNewTask(false);
+    setNewTask({ title: '', description: '', deliverables: '', success_criteria: '', assignee_email: '', assignee_name: '', department: 'Agro-Econ', proposed_days: 3, priority: 'normal', task_type: 'admin', project_name: '' });
+    fetchAll();
+    showToast('Task created — awaiting approval');
+  };
+
+  const approveTask = async () => {
+    if (!approveModal) return;
+    const days = Number(approveDays) || approveModal.proposed_days;
+    await supabase.from('tasks').update({ status: 'todo', estimated_days: days, approved_by: userEmail, approved_at: new Date().toISOString() }).eq('id', approveModal.id);
+    await supabase.from('task_notes').insert({ task_id: approveModal.id, author_email: userEmail, note: `✅ Estimate approved: ${days} day(s) by ${userEmail}.` });
+    await createNotification(approveModal.assignee_email, 'task_approved', 'Task approved', `${approveModal.title} — ${days} day(s) locked.`, approveModal.id);
+    setApproveModal(null); setApproveDays("");
+    fetchAll(); showToast(`Task approved — ${days} day(s) locked`);
+  };
+
+  const startTask = async (task: any) => {
+    if (!task.assignee_email) return showToast('⚠️ Cannot start — no assignee');
+    const dueAt = new Date(Date.now() + (task.estimated_days || 1) * 24*60*60*1000).toISOString();
+    await supabase.from('tasks').update({ status: 'in_progress', started_at: new Date().toISOString(), due_at: dueAt }).eq('id', task.id);
+    await supabase.from('task_notes').insert({ task_id: task.id, author_email: userEmail, note: `▶ Task started.` });
+    fetchAll(); showToast('Task started ▶');
+  };
+
+  const addNote = async () => {
+    if (!noteText.trim() || !noteTask) return;
+    await supabase.from('task_notes').insert({ task_id: noteTask.id, author_email: userEmail, note: noteText });
+    setNoteTask(null); setNoteText(""); fetchAll(); showToast('Progress note saved ✓');
+  };
+
+  const seekIntervention = async (task: any) => {
+    await supabase.from('tasks').update({ intervention_requested: true, needs_attention: true }).eq('id', task.id);
+    await supabase.from('task_notes').insert({ task_id: task.id, author_email: userEmail, note: `🚨 INTERVENTION REQUESTED by ${userEmail}.` });
+    const approvers = teamMembers.filter(m => ['chair','cochair'].includes(m.role));
+    for (const a of approvers) {
+      await createNotification(a.email, 'intervention', 'Intervention requested', `${task.title} — ${userEmail} needs help.`, task.id);
+    }
+    fetchAll(); showToast('Management notified 🚨');
+  };
+
+  const postForReview = async (task: any) => {
+    await supabase.from('tasks').update({ status: 'in_review' }).eq('id', task.id);
+    await supabase.from('task_notes').insert({ task_id: task.id, author_email: userEmail, note: `📤 Posted for review.` });
+    const approvers = teamMembers.filter(m => ['chair','cochair'].includes(m.role));
+    for (const a of approvers) {
+      await createNotification(a.email, 'review_needed', 'Task awaiting review', `${task.title} is ready for your review.`, task.id);
+    }
+    fetchAll(); showToast('Task posted for review');
+  };
+
+  const approveComplete = async (task: any) => {
+    await supabase.from('tasks').update({ status: 'complete', completed_at: new Date().toISOString(), needs_attention: false, intervention_requested: false }).eq('id', task.id);
+    await supabase.from('task_notes').insert({ task_id: task.id, author_email: userEmail, note: `✅ Marked complete.` });
+    await createNotification(task.assignee_email, 'task_complete', 'Task completed', `${task.title} approved & complete.`, task.id);
+    fetchAll(); showToast('Task approved & complete ✅');
+  };
+
+  const sendBack = async (task: any) => {
+    await supabase.from('tasks').update({ status: 'in_progress' }).eq('id', task.id);
+    await supabase.from('task_notes').insert({ task_id: task.id, author_email: userEmail, note: `↩️ Sent back for revision.` });
+    await createNotification(task.assignee_email, 'task_sent_back', 'Task sent back', `${task.title} needs revision.`, task.id);
+    fetchAll(); showToast('Sent back to In Progress');
+  };
+
+  // ---------- DOCUMENTS ----------
+  const openDocModal = (task: any | null) => {
+    setDocTask(task);
+    setDocTaskId(task ? task.id : "");
+    setDocFile(null);
+    setShowDocUpload(true);
+  };
+
+  const closeDocModal = () => {
+    setShowDocUpload(false);
+    setDocTask(null);
+    setDocTaskId("");
+    setDocFile(null);
+    setDocUploading(false);
+  };
+
+  const uploadDoc = async () => {
+    const targetTask = docTask || tasks.find(t => t.id === docTaskId);
+    if (!targetTask) return showToast('Please select a task first');
+    if (!docFile) return showToast('Please choose a file');
+
+    if (docFile.size > MAX_FILE_SIZE) {
+      return showToast(`File is ${fmtSize(docFile.size)} — 25 MB limit exceeded`);
+    }
+    const ext = docFile.name.split('.').pop()?.toLowerCase() || '';
+    if (!ALLOWED_EXT.includes(ext)) {
+      return showToast(`.${ext} files are not allowed`);
+    }
+
+    setDocUploading(true);
+    const safeName = docFile.name.replace(/[^a-zA-Z0-9._-]/g, '_');
+    const path = `${targetTask.id}/${Date.now()}_${safeName}`;
+
+    const { error: upErr } = await supabase.storage
+      .from('task-documents')
+      .upload(path, docFile);
+
+    if (upErr) {
+      setDocUploading(false);
+      return showToast('Upload failed: ' + upErr.message);
+    }
+
+    const { error: dbErr } = await supabase.from('task_documents').insert({
+      task_id: targetTask.id,
+      file_name: docFile.name,
+      file_url: path,
+      uploaded_by: userEmail,
+      file_size: docFile.size,
+      file_type: docFile.type
+    });
+
+    setDocUploading(false);
+    if (dbErr) return showToast('File uploaded but record failed: ' + dbErr.message);
+
+    closeDocModal();
+    fetchAll();
+    showToast('Document uploaded ✓');
+  };
+
+  const openDoc = async (d: any) => {
+    if (d.file_url?.startsWith('http')) { window.open(d.file_url, '_blank'); return; }
+    const { data, error } = await supabase.storage
+      .from('task-documents')
+      .createSignedUrl(d.file_url, 60);
+    if (error || !data) return showToast('Could not open file — try again');
+    window.open(data.signedUrl, '_blank');
+  };
+
+  const deleteDoc = async (d: any) => {
+    if (!confirm(`Delete "${d.file_name}"? This cannot be undone.`)) return;
+    if (!d.file_url?.startsWith('http')) {
+      await supabase.storage.from('task-documents').remove([d.file_url]);
+    }
+    await supabase.from('task_documents').delete().eq('id', d.id);
+    fetchAll();
+    showToast('Document deleted');
+  };
+
+  const getTitle = () => ({ dash:'Dashboard', tasks:'Tasks & Projects', projects:'Projects', meet:'Meetings & Calls', docs:'Documents', fin:'Finance & Compliance', dept:'Departments' }[activeView] || 'Dashboard');
+  const roleBadgeClass = userRole === 'chair' ? 'role-chair' : userRole === 'cochair' ? 'role-cochair' : 'role-member';
+
+  const getFilteredTasks = () => {
+    let list = tasks;
+    if (selectedProject) list = list.filter(t => t.project_name === selectedProject);
+    switch (taskFilter) {
+      case 'mine': list = list.filter(t => t.assignee_email === userEmail); break;
+      case 'urgent': list = list.filter(t => ['overdue','today','soon'].includes(getUrgency(t) || '') || t.priority === 'urgent'); break;
+      case 'attention': list = list.filter(t => t.needs_attention); break;
+    }
+    return sortByUrgency(list);
+  };
+
+  const getProjects = () => {
+    const map: Record<string, any[]> = {};
+    tasks.forEach(t => { if (t.task_type === 'project' && t.project_name) { (map[t.project_name] ||= []).push(t); } });
+    return Object.entries(map).map(([name, list]) => ({
+      name, tasks: list, total: list.length,
+      inProgress: list.filter(t => t.status === 'in_progress').length,
+      inReview: list.filter(t => t.status === 'in_review').length,
+      complete: list.filter(t => t.status === 'complete').length,
+      attention: list.filter(t => t.needs_attention).length,
+      progressPct: list.length ? Math.round((list.filter(t => t.status === 'complete').length / list.length) * 100) : 0
+    })).sort((a, b) => b.attention - a.attention || b.total - a.total);
+  };
+
+  if (loading) return <div style={{color:'#fff',background:'#0a0a0a',height:'100vh',display:'flex',alignItems:'center',justifyContent:'center'}}>Loading Team Portal...</div>;
+
+  if (!isApproved) return (
+    <div className="auth-container"><div className="auth-card" style={{textAlign:'center'}}>
+      <h2>Pending Approval</h2>
+      <p>Your account (<b>{userEmail}</b>) is awaiting administrator approval.</p>
+      <button onClick={() => supabase.auth.signOut().then(() => router.push('/login'))} className="btn btn-lime" style={{marginTop:'20px',width:'100%',justifyContent:'center'}}>Log Out</button>
+    </div></div>
+  );
+
+  const TaskCard = ({ task }: { task: any }) => {
+    const taskNotes = notes[task.id] || [];
+    const taskDocs = documents[task.id] || [];
+    const latestNote = taskNotes[taskNotes.length - 1];
+    const rem = task.status === 'in_progress' ? remainingInfo(task) : null;
+    const flagged = task.needs_attention;
+    const urgency = getUrgency(task);
+    const typeClass = task.task_type === 'project' ? 'type-project' : 'type-admin';
+    const cardClass = flagged ? 'urgent' : (urgency === 'overdue' || urgency === 'today' ? 'urgent' : (urgency === 'soon' || urgency === 'high' ? 'high' : ''));
+    const urgencyLabel = urgency === 'overdue' ? 'Overdue' : urgency === 'today' ? 'Due today' : urgency === 'soon' ? 'Due soon' : urgency === 'high' ? 'High priority' : null;
+
+    return (
+      <div className={`task task-with-popover ${cardClass}`}>
+        <div style={{display:'flex', justifyContent:'space-between', alignItems:'flex-start', gap:'8px'}}>
+          <b style={{flex:1, fontSize:'.88rem', lineHeight:1.35}}>{task.title}</b>
+          {flagged && <span style={{background:'#ef4444', color:'#fff', fontSize:'.6rem', padding:'2px 6px', borderRadius:'4px', fontWeight:700}}>⚠</span>}
+        </div>
+        {urgencyLabel && (
+          <span className={`urgency-strip urgency-${urgency === 'overdue' ? 'overdue' : urgency === 'today' ? 'today' : 'soon'}`} style={{marginTop:'6px'}}>{urgencyLabel}</span>
+        )}
+        <div style={{display:'flex', gap:'6px', marginTop:'8px', flexWrap:'wrap'}}>
+          <span className={`task-type-badge ${typeClass}`}>{task.task_type === 'project' ? '🌐 Project' : '⚙ Admin'}</span>
+          {task.task_type === 'project' && task.project_name && (
+            <span style={{fontSize:'.68rem', color:'rgba(255,255,255,.6)', padding:'2px 0'}}>{task.project_name}</span>
+          )}
+        </div>
+        <small style={{display:'block', marginTop:'8px', color:'rgba(255,255,255,.5)', fontSize:'.72rem'}}>
+          👤 {task.assignee_name || task.assignee_email || <span style={{color:'#f87171'}}>Unassigned</span>}
+        </small>
+        {task.status === 'pending_approval' && (
+          <>
+            <small style={{display:'block', marginTop:'10px', color:'#fbbf24', fontSize:'.72rem'}}>Proposed: <b>{task.proposed_days} day(s)</b></small>
+            {isApprover ? (
+              <button onClick={() => { setApproveModal(task); setApproveDays(String(task.proposed_days)); }} className="btn btn-green" style={{width:'100%', marginTop:'10px', padding:'6px', fontSize:'.75rem', justifyContent:'center'}}>✓ Review</button>
+            ) : (
+              <div style={{marginTop:'10px', fontSize:'.7rem', color:'rgba(255,255,255,.5)', textAlign:'center', padding:'6px', background:'rgba(255,255,255,.04)', borderRadius:'6px'}}>Awaiting approval</div>
+            )}
+          </>
+        )}
+        {task.status === 'todo' && (
+          <>
+            <small style={{display:'block', marginTop:'10px', color:'#60a5fa', fontSize:'.72rem'}}>Estimate: <b>{task.estimated_days} day(s)</b></small>
+            {task.assignee_email ? (
+              <button onClick={() => startTask(task)} className="btn btn-lime" style={{width:'100%', marginTop:'10px', padding:'6px', fontSize:'.75rem', justifyContent:'center'}}>▶ Start</button>
+            ) : (<div className="task-warning">⚠ No assignee</div>)}
+          </>
+        )}
+        {task.status === 'in_progress' && rem && (
+          <>
+            <div style={{marginTop:'10px'}}>
+              <div style={{display:'flex', justifyContent:'space-between', fontSize:'.68rem', color: rem.overdue ? '#ef4444' : (rem.pct < 30 ? '#fbbf24' : '#a3e635')}}>
+                <span>{rem.overdue ? '⚠ OVERDUE' : '⏱ ' + rem.label}</span>
+                <span>{Math.round(100 - rem.pct)}%</span>
+              </div>
+              <div className="bar" style={{marginTop:'4px'}}><i style={{width: `${100 - rem.pct}%`, background: rem.overdue ? '#ef4444' : (rem.pct < 30 ? '#fbbf24' : undefined)}}></i></div>
+            </div>
+            <div style={{display:'flex', gap:'6px', marginTop:'10px', flexWrap:'wrap'}}>
+              <button onClick={() => { setNoteTask(task); setNoteText(""); }} className="btn btn-ghost" style={{padding:'5px 8px', fontSize:'.68rem'}}>📝</button>
+              <button onClick={() => seekIntervention(task)} className="btn-danger">🚨</button>
+              <button onClick={() => postForReview(task)} className="btn btn-green" style={{padding:'5px 8px', fontSize:'.68rem'}}>📤</button>
+            </div>
+          </>
+        )}
+        {task.status === 'in_review' && (
+          <>
+            <small style={{display:'block', marginTop:'8px', color:'#c4b5fd', fontSize:'.72rem'}}>Awaiting approval</small>
+            {isApprover ? (
+              <div style={{display:'flex', gap:'6px', marginTop:'10px'}}>
+                <button onClick={() => approveComplete(task)} className="btn btn-green" style={{flex:1, padding:'6px', fontSize:'.72rem', justifyContent:'center'}}>✓</button>
+                <button onClick={() => sendBack(task)} className="btn btn-ghost" style={{flex:1, padding:'6px', fontSize:'.72rem', justifyContent:'center'}}>↩</button>
+              </div>
+            ) : (
+              <div style={{marginTop:'10px', fontSize:'.7rem', color:'rgba(255,255,255,.5)', textAlign:'center', padding:'6px', background:'rgba(255,255,255,.04)', borderRadius:'6px'}}>Awaiting review</div>
+            )}
+          </>
+        )}
+        {task.status === 'complete' && (
+          <>
+            <small style={{display:'block', marginTop:'8px', color:'#4ade80', fontSize:'.72rem'}}>✅ {task.completed_at ? new Date(task.completed_at).toLocaleDateString() : ''}</small>
+            <button onClick={() => openDocModal(task)} className="btn btn-ghost" style={{width:'100%', marginTop:'8px', padding:'5px', fontSize:'.68rem', justifyContent:'center'}}>📎 Attach</button>
+            {taskDocs.length > 0 && (
+              <div style={{marginTop:'6px', fontSize:'.68rem'}}>
+                {taskDocs.map(d => (
+                  <button key={d.id} onClick={() => openDoc(d)} style={{display:'block', background:'none', border:'none', padding:'2px 0', color:'#a3e635', fontSize:'.68rem', cursor:'pointer', textAlign:'left'}}>
+                    📄 {d.file_name} {d.file_size ? `(${fmtSize(d.file_size)})` : ''}
+                  </button>
+                ))}
+              </div>
+            )}
+          </>
+        )}
+        {latestNote && (
+          <div style={{marginTop:'8px', padding:'5px 7px', background:'rgba(255,255,255,.04)', borderRadius:'6px', fontSize:'.68rem', color:'rgba(255,255,255,.6)'}}>
+            {latestNote.note.length > 60 ? latestNote.note.slice(0,60) + '...' : latestNote.note}
+          </div>
+        )}
+        <div className="task-popover">
+          <h4>📋 Task Details</h4>
+          <div className="pop-section"><h4>Description</h4><p>{task.description || 'No description provided.'}</p></div>
+          {task.deliverables && (<div className="pop-section"><h4>📦 Deliverables</h4><p>{task.deliverables}</p></div>)}
+          {task.success_criteria && (<div className="pop-section"><h4>🎯 Success Criteria</h4><p>{task.success_criteria}</p></div>)}
+          <div className="pop-section"><h4>👤 Details</h4>
+            <p style={{fontSize:'.72rem'}}>
+              <b>Assigned to:</b> {task.assignee_name || task.assignee_email || 'Unassigned'}<br/>
+              <b>Department:</b> {task.department}<br/>
+              <b>Priority:</b> {task.priority}<br/>
+              <b>Created by:</b> {task.created_by_name || task.created_by || '---'}
+            </p>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+  const ClockHistory = () => {
+    const today = new Date().toDateString();
+    const todaySecs = sessions
+      .filter(s => s.clock_out_at && new Date(s.clock_in_at).toDateString() === today)
+      .reduce((a, s) => a + (s.total_seconds || 0), 0);
+    const weekStart = Date.now() - 7 * 24 * 60 * 60 * 1000;
+    const weekSecs = sessions
+      .filter(s => s.clock_out_at && new Date(s.clock_in_at).getTime() >= weekStart)
+      .reduce((a, s) => a + (s.total_seconds || 0), 0);
+
+    return (
+      <div className="panel" style={{marginTop:'20px'}}>
+        <h3>🕐 My Clock-In History</h3>
+        <div style={{display:'grid', gridTemplateColumns:'1fr 1fr 1fr', gap:'12px', marginTop:'14px'}}>
+          <div className="mgmt-kpi"><span>Today</span><b>{fmtHrs(todaySecs)}</b></div>
+          <div className="mgmt-kpi"><span>Last 7 days</span><b>{fmtHrs(weekSecs)}</b></div>
+          <div className="mgmt-kpi"><span>Sessions logged</span><b>{sessions.filter(s => s.clock_out_at).length}</b></div>
+        </div>
+        <div style={{marginTop:'16px'}}>
+          {sessions.slice(0, 8).map(s => (
+            <div key={s.id} style={{display:'flex', justifyContent:'space-between', padding:'8px 0', borderBottom:'1px solid rgba(255,255,255,.06)', fontSize:'.8rem'}}>
+              <span style={{color:'rgba(255,255,255,.7)'}}>
+                {new Date(s.clock_in_at).toLocaleString('en-KE', { dateStyle: 'short', timeStyle: 'short' })}
+              </span>
+              <span style={{color: s.clock_out_at ? '#a3e635' : '#fbbf24'}}>
+                {s.clock_out_at ? fmtHrs(s.total_seconds || 0) : '⏱ Active now'}
+              </span>
+            </div>
+          ))}
+          {sessions.length === 0 && <p style={{color:'rgba(255,255,255,.5)', fontSize:'.8rem'}}>No sessions logged yet.</p>}
+        </div>
+      </div>
+    );
+  };
+
+  const ManagementDashboard = () => {
+    const needsAttention = tasks.filter(t => t.needs_attention);
+    const overdue = tasks.filter(t => getUrgency(t) === 'overdue' && t.status !== 'complete');
+    const pendingApproval = tasks.filter(t => t.status === 'pending_approval');
+    const inReview = tasks.filter(t => t.status === 'in_review');
+    const projects = getProjects();
+
+    return (
+      <div>
+        <div className="mgmt-panel">
+          <h2>👔 Management Overview</h2>
+          <p className="mgmt-subtitle">Here's what needs your attention right now.</p>
+          <div className="mgmt-kpis">
+            <div className={`mgmt-kpi ${needsAttention.length > 0 ? 'alert' : 'good'}`}><span>Needs Attention</span><b>{needsAttention.length}</b></div>
+            <div className={`mgmt-kpi ${overdue.length > 0 ? 'alert' : 'good'}`}><span>Overdue</span><b>{overdue.length}</b></div>
+            <div className={`mgmt-kpi ${pendingApproval.length > 0 ? 'warning' : 'good'}`}><span>Awaiting Approval</span><b>{pendingApproval.length}</b></div>
+            <div className={`mgmt-kpi ${inReview.length > 0 ? 'warning' : 'good'}`}><span>Awaiting Review</span><b>{inReview.length}</b></div>
+            <div className="mgmt-kpi"><span>Active Projects</span><b>{projects.length}</b></div>
+            <div className="mgmt-kpi"><span>Total Tasks</span><b>{tasks.length}</b></div>
+          </div>
+        </div>
+
+        {needsAttention.length > 0 && (
+          <div className="panel" style={{marginTop:'20px', borderLeft:'4px solid #ef4444'}}>
+            <h3>🚨 Needs Immediate Attention</h3>
+            {needsAttention.slice(0, 5).map(t => (
+              <div key={t.id} className="meet" style={{marginTop:'10px'}}>
+                <div><b>{t.title}</b><small>{t.assignee_name || 'Unassigned'} · {t.project_name || t.department} · {t.status}</small></div>
+                <button className="btn btn-green" style={{padding:'6px 14px', fontSize:'.75rem'}} onClick={() => { setTaskFilter('attention'); setActiveView('tasks'); }}>View</button>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {projects.length > 0 && (
+          <div className="panel" style={{marginTop:'20px'}}>
+            <h3>🗂 Active Projects</h3>
+            <div className="projects-grid" style={{marginTop:'16px'}}>
+              {projects.slice(0, 6).map(p => (
+                <div key={p.name} className="project-card">
+                  <h3>{p.name}</h3>
+                  <div className="proj-meta">{p.total} task(s) · {p.inProgress} active</div>
+                  <div className="project-stats">
+                    <div className="project-stat"><b>{p.inProgress}</b><span>Active</span></div>
+                    <div className="project-stat"><b>{p.inReview}</b><span>Review</span></div>
+                    <div className="project-stat"><b>{p.complete}</b><span>Done</span></div>
+                    <div className={`project-stat ${p.attention > 0 ? 'attention' : ''}`}><b>{p.attention}</b><span>Flag</span></div>
+                  </div>
+                  <div className="project-progress-bar"><i style={{width:`${p.progressPct}%`}}></i></div>
+                  <button className="btn btn-ghost" style={{width:'100%', padding:'6px', fontSize:'.75rem', justifyContent:'center'}} onClick={() => { setSelectedProject(p.name); setActiveView('tasks'); setTaskFilter('all'); }}>View Tasks</button>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  const PersonalDashboard = () => {
+    const myTasks = tasks.filter(t => t.assignee_email === userEmail && t.status !== 'complete');
+    const myUrgent = myTasks.filter(t => ['overdue','today','soon'].includes(getUrgency(t) || ''));
+    const myInProgress = myTasks.filter(t => t.status === 'in_progress');
+    const myInReview = myTasks.filter(t => t.status === 'in_review');
+    const myTodo = myTasks.filter(t => t.status === 'todo');
+    const activeTz = TIMEZONES[clockTz];
+
+    return (
+      <div>
+        <div className="clock-card">
+          <div><div className="clock-time">{fmt(timeSecs)}</div><small style={{color:'rgba(255,255,255,.55)'}}>{dateLine}</small></div>
+          <div style={{flex:1, minWidth:'180px'}}>
+            <div style={{fontWeight:700, color:'#fff'}}>{clockedIn ? 'You are clocked in' : 'You are clocked out'}</div>
+            <small style={{color:'rgba(255,255,255,.55)'}}>{clockedIn ? 'Session running' : 'Ready to start'}</small>
+            <div style={{marginTop:'6px', fontSize:'.75rem', color:'rgba(163,230,53,.8)'}}>
+              🌍 {activeTz.label}: <b>{fmtInTz(new Date(), activeTz.tz)}</b>
+            </div>
+          </div>
+          <button className={`btn ${clockedIn ? 'btn-ghost' : 'btn-lime'}`} onClick={toggleClock}>{clockedIn ? '⏹ Clock Out' : '⏱ Clock In'}</button>
+        </div>
+
+        <div className="kpi-grid">
+          <div className="kpi"><span>My open tasks</span><b>{myTasks.length}</b><small className="up">Assigned to you</small></div>
+          <div className="kpi"><span>Urgent</span><b>{myUrgent.length}</b><small className="down">Due soon/overdue</small></div>
+          <div className="kpi"><span>In progress</span><b>{myInProgress.length}</b><small>Currently working</small></div>
+          <div className="kpi"><span>Awaiting review</span><b>{myInReview.length}</b><small>With management</small></div>
+        </div>
+
+        <ClockHistory />
+
+        {myUrgent.length > 0 && (
+          <div className="panel" style={{marginTop:'20px', borderLeft:'4px solid #f59e0b'}}>
+            <h3>⚡ Urgent — Due Soon</h3>
+            {myUrgent.slice(0, 5).map(t => {
+              const rem = remainingInfo(t);
+              return (
+                <div key={t.id} className="meet" style={{marginTop:'10px'}}>
+                  <div><b>{t.title}</b><small>{rem ? rem.label : 'Awaiting start'} · {t.project_name || t.department}</small></div>
+                  <button className="btn btn-green" style={{padding:'6px 14px', fontSize:'.75rem'}} onClick={() => { setTaskFilter('mine'); setActiveView('tasks'); }}>Open</button>
+                </div>
+              );
+            })}
+          </div>
+        )}
+
+        <div className="two-col">
+          <div className="panel"><h3>🎯 My In Progress</h3>
+            {myInProgress.length === 0 && <p style={{color:'rgba(255,255,255,.5)', marginTop:'12px', fontSize:'.85rem'}}>No active tasks right now.</p>}
+            {myInProgress.map(t => <TaskCard key={t.id} task={t} />)}
+          </div>
+          <div className="panel"><h3>📋 My To Do</h3>
+            {myTodo.length === 0 && <p style={{color:'rgba(255,255,255,.5)', marginTop:'12px', fontSize:'.85rem'}}>Nothing pending.</p>}
+            {myTodo.slice(0, 5).map(t => <TaskCard key={t.id} task={t} />)}
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+  const ProjectsView = () => {
+    const projects = getProjects();
+    return (
+      <div>
+        {projects.length === 0 && (<div className="panel" style={{marginTop:0}}><p style={{color:'rgba(255,255,255,.6)'}}>No projects yet. Create a task with type "Project Task" and give it a project name to start one.</p></div>)}
+        <div className="projects-grid">
+          {projects.map(p => (
+            <div key={p.name} className="project-card">
+              <h3>{p.name}</h3>
+              <div className="proj-meta">{p.total} task(s) · {p.inProgress} active · {p.complete} complete</div>
+              <div className="project-stats">
+                <div className="project-stat"><b>{p.inProgress}</b><span>Active</span></div>
+                <div className="project-stat"><b>{p.inReview}</b><span>Review</span></div>
+                <div className="project-stat"><b>{p.complete}</b><span>Done</span></div>
+                <div className={`project-stat ${p.attention > 0 ? 'attention' : ''}`}><b>{p.attention}</b><span>Flag</span></div>
+              </div>
+              <div className="project-progress-bar"><i style={{width:`${p.progressPct}%`}}></i></div>
+              <button className="btn btn-lime" style={{width:'100%', padding:'8px', fontSize:'.8rem', justifyContent:'center'}} onClick={() => { setSelectedProject(p.name); setTaskFilter('all'); setActiveView('tasks'); }}>View Tasks →</button>
+            </div>
+          ))}
+        </div>
+      </div>
+    );
+  };
+
+  const TasksView = () => {
+    const filtered = getFilteredTasks();
+    const counts = {
+      mine: tasks.filter(t => t.assignee_email === userEmail).length,
+      all: tasks.length,
+      urgent: tasks.filter(t => ['overdue','today','soon'].includes(getUrgency(t) || '') || t.priority === 'urgent').length,
+      attention: tasks.filter(t => t.needs_attention).length
+    };
+
+    return (
+      <div>
+        <div style={{display:'flex', gap:'10px', marginBottom:'16px', flexWrap:'wrap', alignItems:'center'}}>
+          <button className="btn btn-lime" onClick={() => setShowNewTask(true)}>＋ New Task</button>
+          {selectedProject && (
+            <div style={{padding:'8px 14px', background:'rgba(163,230,53,.15)', border:'1px solid rgba(163,230,53,.4)', borderRadius:'8px', color:'#a3e635', fontSize:'.8rem', display:'flex', alignItems:'center', gap:'10px'}}>
+              🗂 Viewing: <b>{selectedProject}</b>
+              <button onClick={() => setSelectedProject(null)} style={{background:'none', border:'none', color:'#a3e635', cursor:'pointer', fontSize:'1rem'}}>×</button>
+            </div>
+          )}
+        </div>
+        <div className="filter-tabs">
+          <button className={`filter-tab ${taskFilter === 'mine' ? 'active' : ''}`} onClick={() => setTaskFilter('mine')}>👤 My Tasks <span className="count">{counts.mine}</span></button>
+          <button className={`filter-tab ${taskFilter === 'all' ? 'active' : ''}`} onClick={() => setTaskFilter('all')}>📋 All Tasks <span className="count">{counts.all}</span></button>
+          <button className={`filter-tab ${taskFilter === 'urgent' ? 'active' : ''}`} onClick={() => setTaskFilter('urgent')}>⚡ Urgent <span className="count">{counts.urgent}</span></button>
+          <button className={`filter-tab ${taskFilter === 'attention' ? 'active' : ''}`} onClick={() => setTaskFilter('attention')}>🚨 Needs Attention <span className="count">{counts.attention}</span></button>
+        </div>
+        <div style={{display:'grid', gridTemplateColumns:'repeat(5, 1fr)', gap:'12px'}}>
+          {COLS.map(col => {
+            const list = filtered.filter(t => t.status === col.key);
+            return (
+              <div key={col.key} className="col">
+                <h3 style={{borderBottom:`2px solid ${col.color}`, paddingBottom:'8px'}}>{col.label} <span>{list.length}</span></h3>
+                <div>{list.map(t => <TaskCard key={t.id} task={t} />)}</div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    );
+  };
+
+  const DocumentsView = () => {
+    const allDocs = Object.entries(documents)
+      .flatMap(([tid, docs]) =>
+        (docs as any[]).map(d => ({ ...d, task: tasks.find(t => t.id === tid) }))
+      )
+      .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+
+    return (
+      <div>
+        <div className="panel" style={{marginTop:0}}>
+          <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'16px', flexWrap:'wrap', gap:'10px'}}>
+            <h3 style={{margin:0}}>📁 Document Vault <span style={{color:'rgba(255,255,255,.5)', fontSize:'.8rem', fontWeight:400}}>({allDocs.length} file{allDocs.length === 1 ? '' : 's'} · private storage)</span></h3>
+            <button className="btn btn-lime" style={{padding:'8px 18px', fontSize:'.82rem'}} onClick={() => openDocModal(null)}>⬆ Upload Document</button>
+          </div>
+          {allDocs.length === 0 ? (
+            <p style={{color:'rgba(255,255,255,.6)'}}>No documents yet. Upload deliverables from a completed task, or use the button above.</p>
+          ) : (
+            <div style={{overflowX:'auto'}}>
+              <table>
+                <thead>
+                  <tr><th>Document</th><th>Task / Project</th><th>Size</th><th>Uploaded by</th><th>Date</th><th></th></tr>
+                </thead>
+                <tbody>
+                  {allDocs.map(d => (
+                    <tr key={d.id}>
+                      <td>
+                        <button onClick={() => openDoc(d)} style={{background:'none', border:'none', color:'#a3e635', cursor:'pointer', fontSize:'.86rem', textAlign:'left', padding:0, fontWeight:600}}>
+                          📄 {d.file_name}
+                        </button>
+                      </td>
+                      <td>
+                        <div style={{fontSize:'.84rem'}}>{d.task?.title || '---'}</div>
+                        {d.task?.project_name && <small style={{color:'rgba(255,255,255,.5)'}}>{d.task.project_name}</small>}
+                      </td>
+                      <td>{fmtSize(d.file_size)}</td>
+                      <td style={{fontSize:'.8rem'}}>{d.uploaded_by}</td>
+                      <td style={{fontSize:'.8rem'}}>{new Date(d.created_at).toLocaleDateString('en-KE', { dateStyle: 'short' })}</td>
+                      <td>
+                        {(isApprover || d.uploaded_by === userEmail) && (
+                          <button onClick={() => deleteDoc(d)} className="btn-danger" style={{padding:'4px 10px', fontSize:'.68rem'}}>Delete</button>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  };
+
+  const unreadCount = notifications.filter(n => !n.read).length;
+
+  return (
+    <div className="portal-shell">
+      <aside className="sidebar">
+        <a className="logo" href="/"><span className="logo-mark">CO</span>COGAs<span style={{fontWeight:400, opacity:.6, fontSize:'.8rem'}}>&nbsp;Portal</span></a>
+        {[
+          { id: 'dash', label: '🏠 Dashboard' },
+          { id: 'tasks', label: '✅ Tasks & Projects' },
+          { id: 'projects', label: '🗂 Projects' },
+          { id: 'meet', label: '📅 Meetings & Calls' },
+          { id: 'docs', label: '📁 Documents' },
+          { id: 'fin', label: '💰 Finance & Compliance' },
+          { id: 'dept', label: '🏢 Departments' }
+        ].map(x => (<button key={x.id} className={`snav ${activeView === x.id ? 'active' : ''}`} onClick={() => setActiveView(x.id)}>{x.label}</button>))}
+        <button className="snav" style={{marginTop: 'auto', color: '#f87171'}} onClick={() => supabase.auth.signOut().then(() => window.location.href = '/login')}>🚪 Log Out</button>
+      </aside>
+
+      <main className="main">
+        <div className="topbar">
+          <h1>{getTitle()}</h1>
+          <div style={{display:'flex', gap:'12px', alignItems:'center'}}>
+            <input className="search" placeholder="🔍 Search..." />
+            <div ref={notifRef} style={{position:'relative'}}>
+              <button onClick={() => setShowNotifPanel(p => !p)} style={{background:'rgba(255,255,255,.07)', border:'1px solid rgba(255,255,255,.12)', borderRadius:'10px', padding:'8px 12px', color:'#fff', cursor:'pointer', fontSize:'1rem', position:'relative'}}>
+                🔔
+                {unreadCount > 0 && (
+                  <span style={{position:'absolute', top:'-4px', right:'-4px', background:'#ef4444', color:'#fff', fontSize:'.6rem', fontWeight:700, borderRadius:'10px', padding:'2px 6px', minWidth:'18px'}}>{unreadCount}</span>
+                )}
+              </button>
+              {showNotifPanel && (
+                <div style={{position:'absolute', right:0, top:'calc(100% + 8px)', width:'360px', maxHeight:'480px', overflowY:'auto', background:'#101d15', border:'1px solid rgba(255,255,255,.12)', borderRadius:'12px', padding:'12px', zIndex:500, boxShadow:'0 20px 50px rgba(0,0,0,.6)'}}>
+                  <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'10px'}}>
+                    <b style={{fontSize:'.85rem', color:'#fff'}}>Notifications</b>
+                    {unreadCount > 0 && <button onClick={markAllRead} style={{background:'none', border:'none', color:'#a3e635', fontSize:'.72rem', cursor:'pointer'}}>Mark all read</button>}
+                  </div>
+                  {notifications.length === 0 && <p style={{color:'rgba(255,255,255,.5)', fontSize:'.78rem'}}>No notifications yet.</p>}
+                  {notifications.map(n => (
+                    <div key={n.id} onClick={() => markNotifRead(n.id)} style={{padding:'10px', borderRadius:'8px', background: n.read ? 'rgba(255,255,255,.03)' : 'rgba(163,230,53,.08)', marginBottom:'6px', cursor:'pointer', borderLeft: n.read ? '3px solid transparent' : '3px solid #a3e635'}}>
+                      <div style={{fontSize:'.8rem', fontWeight:600, color:'#fff'}}>{n.title}</div>
+                      <div style={{fontSize:'.72rem', color:'rgba(255,255,255,.6)', marginTop:'2px'}}>{n.message}</div>
+                      <div style={{fontSize:'.65rem', color:'rgba(255,255,255,.4)', marginTop:'4px'}}>{new Date(n.created_at).toLocaleString('en-KE', { dateStyle:'short', timeStyle:'short' })}</div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+            <span style={{fontSize:'.85rem', color:'rgba(255,255,255,.6)'}}>
+              👋 <b style={{color:'#fff'}}>{userEmail}</b>
+              <span className={`role-badge ${roleBadgeClass}`}>{userRole}</span>
+            </span>
+          </div>
+        </div>
+
+        {activeView === 'dash' && (isApprover ? <ManagementDashboard /> : <PersonalDashboard />)}
+        {activeView === 'tasks' && <TasksView />}
+        {activeView === 'projects' && <ProjectsView />}
+        {activeView === 'meet' && (<div><div className="panel" style={{marginTop:0}}><h3>📅 Upcoming meetings</h3><div className="meet"><div><b>Client call — Dairy Coop</b><small>Today 10:30</small></div><button className="btn btn-green" style={{padding:'8px 16px', fontSize:'.8rem'}} onClick={() => showToast('Joining...')}>Join</button></div></div></div>)}
+        {activeView === 'docs' && <DocumentsView />}
+        {activeView === 'fin' && (<div><div className="kpi-grid"><div className="kpi"><span>Collected (Oct)</span><b>KSh 1.24M</b><small className="up">▲ 18%</small></div><div className="kpi"><span>Outstanding</span><b>KSh 380K</b><small className="down">2 unpaid</small></div></div></div>)}
+        {activeView === 'dept' && (<div><div className="panel" style={{marginTop:0}}><h3>🏢 Departments</h3><p style={{color:'rgba(255,255,255,.6)', marginTop:'16px'}}>Department overview coming soon.</p></div></div>)}
+      </main>
+
+      {showNewTask && (
+        <div className="modal-overlay" onClick={() => setShowNewTask(false)}>
+          <div className="modal-card" onClick={e => e.stopPropagation()}>
+            <div className="modal-header">
+              <div><h3>Create New Task</h3><p>Fill in the details below. The task will be sent for approval before work begins.</p></div>
+              <button className="modal-close" onClick={() => setShowNewTask(false)}>×</button>
+            </div>
+            <div className="modal-body">
+              <div className="form-section">
+                <div className="form-section-title">📋 Task Information</div>
+                <div className="form-group">
+                  <label className="form-label">Task title<span className="required">*</span></label>
+                  <input className="form-input" placeholder="e.g., Prepare Nakuru field survey protocol" value={newTask.title} onChange={e => setNewTask({...newTask, title: e.target.value})} />
+                </div>
+                <div className="form-group">
+                  <label className="form-label">Description</label>
+                  <textarea className="form-textarea" placeholder="What needs to be done?" rows={2} value={newTask.description} onChange={e => setNewTask({...newTask, description: e.target.value})} />
+                </div>
+                <div className="form-row">
+                  <div className="form-group">
+                    <label className="form-label">Deliverables</label>
+                    <textarea className="form-textarea" placeholder="e.g., Report PDF, dataset" rows={2} value={newTask.deliverables} onChange={e => setNewTask({...newTask, deliverables: e.target.value})} />
+                  </div>
+                  <div className="form-group">
+                    <label className="form-label">Success criteria</label>
+                    <textarea className="form-textarea" placeholder="e.g., Approved by chair" rows={2} value={newTask.success_criteria} onChange={e => setNewTask({...newTask, success_criteria: e.target.value})} />
+                  </div>
+                </div>
+              </div>
+              <div className="form-section">
+                <div className="form-section-title">🧭 Task Type</div>
+                <div className="radio-group">
+                  <label className={`radio-option ${newTask.task_type === 'admin' ? 'selected' : ''}`}>
+                    <input type="radio" name="task_type" value="admin" checked={newTask.task_type === 'admin'} onChange={() => setNewTask({...newTask, task_type: 'admin', project_name: ''})} />
+                    <b>⚙ Admin Task</b><small>Internal operations</small>
+                  </label>
+                  <label className={`radio-option ${newTask.task_type === 'project' ? 'selected' : ''}`}>
+                    <input type="radio" name="task_type" value="project" checked={newTask.task_type === 'project'} onChange={() => setNewTask({...newTask, task_type: 'project'})} />
+                    <b>🌐 Project Task</b><small>Client work</small>
+                  </label>
+                </div>
+                {newTask.task_type === 'project' && (
+                  <div className="form-group" style={{marginTop:'14px'}}>
+                    <label className="form-label">Project name<span className="required">*</span></label>
+                    <input className="form-input" placeholder="e.g., Greenhouse Feasibility — Nakuru" value={newTask.project_name} onChange={e => setNewTask({...newTask, project_name: e.target.value})} />
+                  </div>
+                )}
+              </div>
+              <div className="form-section">
+                <div className="form-section-title">👤 Assignment</div>
+                <div className="form-group">
+                  <label className="form-label">Assign to<span className="required">*</span></label>
+                  <select className="form-select" value={newTask.assignee_email} onChange={e => setNewTask({...newTask, assignee_email: e.target.value})}>
+                    <option value="">--- Select a team member ---</option>
+                    {teamMembers.map(m => <option key={m.id} value={m.email}>{m.full_name || m.email} ({m.role})</option>)}
+                  </select>
+                </div>
+                <div className="form-group">
+                  <label className="form-label">Department</label>
+                  <select className="form-select" value={newTask.department} onChange={e => setNewTask({...newTask, department: e.target.value})}>
+                    {DEPARTMENTS.map(d => <option key={d}>{d}</option>)}
+                  </select>
+                </div>
+              </div>
+              <div className="form-section">
+                <div className="form-section-title">⏱ Time & Priority</div>
+                <div className="form-row">
+                  <div className="form-group">
+                    <label className="form-label">Proposed duration (days)<span className="required">*</span></label>
+                    <input className="form-input" type="number" min="0.1" step="0.5" value={newTask.proposed_days} onChange={e => setNewTask({...newTask, proposed_days: Number(e.target.value)})} />
+                  </div>
+                  <div className="form-group">
+                    <label className="form-label">Priority</label>
+                    <select className="form-select" value={newTask.priority} onChange={e => setNewTask({...newTask, priority: e.target.value})}>
+                      <option value="low">Low</option><option value="normal">Normal</option><option value="high">High</option><option value="urgent">Urgent</option>
+                    </select>
+                  </div>
+                </div>
+              </div>
+              <div className="info-banner"><b>ⓘ Approval required.</b> This task will be sent to the chair / co-chair.</div>
+            </div>
+            <div className="modal-footer">
+              <button className="btn btn-ghost" style={{flex:1, justifyContent:'center'}} onClick={() => setShowNewTask(false)}>Cancel</button>
+              <button className="btn btn-lime" style={{flex:1, justifyContent:'center'}} onClick={createTask}>Create Task</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {approveModal && (
+        <div className="modal-overlay" onClick={() => setApproveModal(null)}>
+          <div className="modal-card" style={{maxWidth:'440px'}} onClick={e => e.stopPropagation()}>
+            <div className="modal-header"><div><h3>Review Time Estimate</h3><p>Adjust the duration before approving.</p></div><button className="modal-close" onClick={() => setApproveModal(null)}>×</button></div>
+            <div className="modal-body">
+              <div className="form-group"><label className="form-label">Task</label><div style={{padding:'10px 12px', background:'#f9fafb', borderRadius:'8px', fontSize:'.85rem', color:'#333'}}>{approveModal.title}</div></div>
+              {approveModal.description && (<div className="form-group"><label className="form-label">Description</label><div style={{padding:'10px 12px', background:'#f9fafb', borderRadius:'8px', fontSize:'.8rem', color:'#555'}}>{approveModal.description}</div></div>)}
+              <div className="form-group"><label className="form-label">Proposed by {approveModal.created_by_name || approveModal.created_by}</label><div style={{padding:'10px 12px', background:'#fef3c7', borderRadius:'8px', fontSize:'.85rem', color:'#78350f'}}>{approveModal.proposed_days} day(s)</div></div>
+              <div className="form-group"><label className="form-label">Your approved duration (days)<span className="required">*</span></label><input className="form-input" type="number" min="0.1" step="0.5" value={approveDays} onChange={e => setApproveDays(e.target.value)} /></div>
+            </div>
+            <div className="modal-footer">
+              <button className="btn btn-ghost" style={{flex:1, justifyContent:'center'}} onClick={() => setApproveModal(null)}>Cancel</button>
+              <button className="btn btn-lime" style={{flex:1, justifyContent:'center'}} onClick={approveTask}>Approve</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {noteTask && (
+        <div className="modal-overlay" onClick={() => setNoteTask(null)}>
+          <div className="modal-card" style={{maxWidth:'480px'}} onClick={e => e.stopPropagation()}>
+            <div className="modal-header"><div><h3>Add Progress Update</h3><p>{noteTask.title}</p></div><button className="modal-close" onClick={() => setNoteTask(null)}>×</button></div>
+            <div className="modal-body">
+              <div className="form-group"><label className="form-label">Latest update</label><textarea className="form-textarea" rows={4} placeholder="What's the latest?" value={noteText} onChange={e => setNoteText(e.target.value)} /></div>
+              {(notes[noteTask.id] || []).length > 0 && (
+                <div style={{marginTop:'16px', maxHeight:'180px', overflowY:'auto'}}>
+                  <div className="form-section-title">📝 Previous updates</div>
+                  {(notes[noteTask.id] || []).slice().reverse().map(n => (
+                    <div key={n.id} style={{fontSize:'.75rem', padding:'8px 10px', background:'#f9fafb', borderRadius:'6px', marginBottom:'6px', color:'#333'}}>
+                      <b>{n.author_email}</b> · {new Date(n.created_at).toLocaleString()}<br/>{n.note}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+            <div className="modal-footer">
+              <button className="btn btn-ghost" style={{flex:1, justifyContent:'center'}} onClick={() => setNoteTask(null)}>Cancel</button>
+              <button className="btn btn-lime" style={{flex:1, justifyContent:'center'}} onClick={addNote}>Save Note</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showDocUpload && (
+        <div className="modal-overlay" onClick={closeDocModal}>
+          <div className="modal-card" style={{maxWidth:'480px'}} onClick={e => e.stopPropagation()}>
+            <div className="modal-header"><div><h3>Upload Document</h3><p>Files are stored privately and organised per task.</p></div><button className="modal-close" onClick={closeDocModal}>×</button></div>
+            <div className="modal-body">
+              <div className="form-group">
+                <label className="form-label">Task<span className="required">*</span></label>
+                {docTask ? (
+                  <div style={{padding:'10px 12px', background:'#f9fafb', borderRadius:'8px', fontSize:'.85rem', color:'#333'}}>{docTask.title}</div>
+                ) : (
+                  <>
+                    <select className="form-select" value={docTaskId} onChange={e => setDocTaskId(e.target.value)}>
+                      <option value="">--- Select a task ---</option>
+                      {tasks.map(t => <option key={t.id} value={t.id}>{t.title}{t.project_name ? ` (${t.project_name})` : ''}</option>)}
+                    </select>
+                  </>
+                )}
+              </div>
+              <div className="form-group">
+                <label className="form-label">File<span className="required">*</span></label>
+                <input className="form-input" type="file" accept=".pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.png,.jpg,.jpeg,.zip,.csv,.txt" onChange={e => setDocFile(e.target.files?.[0] || null)} />
+                <div className="form-help">Max 25 MB. Allowed: PDF, Word, Excel, PowerPoint, images, ZIP, CSV, TXT.</div>
+              </div>
+              {docFile && (
+                <div style={{padding:'10px 12px', background:'#f0fdf4', border:'1px solid #bbf7d0', borderRadius:'8px', fontSize:'.82rem', color:'#166534', marginBottom:'4px'}}>
+                  Selected: <b>{docFile.name}</b> ({fmtSize(docFile.size)})
+                </div>
+              )}
+            </div>
+            <div className="modal-footer">
+              <button className="btn btn-ghost" style={{flex:1, justifyContent:'center'}} onClick={closeDocModal} disabled={docUploading}>Cancel</button>
+              <button className="btn btn-lime" style={{flex:1, justifyContent:'center'}} onClick={uploadDoc} disabled={docUploading}>
+                {docUploading ? 'Uploading...' : '⬆ Upload'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {toastMsg && <div id="toast" className="show" style={{display:'block'}}>{toastMsg}</div>}
+    </div>
+  );
+}

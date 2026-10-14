@@ -1,0 +1,298 @@
+# 📦 CAPSULE — COGAs Platform (Final, All Phases)
+CAPSULE — COGAs Consultancy Platform
+Project: COGAs Consultancy Web Application — All-in-One Business Operating System
+Current Phase: Phase 1 COMPLETE + Architecture for Phases 2–6 SHIPPED
+Status: Production-ready skeleton with all UI, flows and data models live.
+External integrations stubbed behind feature flags — flip on when
+credentials are ready.
+
+Vision (final, clarified):
+COGAs is a family-run agri-consultancy. The platform is an internal, AI-powered,
+all-in-one operating system to run the business professionally and automated.
+Inspired by OptiCore's 18 products but not selling them. OptiCore is a separate
+business (productized SME systems to sell later). The COGAs platform has 8 modules:
+
+Client & Sales 5. Communications
+
+Project Delivery 6. Knowledge & AI (AgriMind)
+
+Money & Finance 7. Operations & Compliance
+
+Team & People 8. Insights & Control
+
+Tech Stack: Next.js 16 (App Router, Turbopack) · React 19 · TypeScript ·
+Supabase (Auth/DB/Storage/Edge Functions/pgvector) · Vercel · Custom CSS
+
+═══════════════════════════════════════════════════════════════
+WHAT'S BUILT — FULL MODULE MAP
+═══════════════════════════════════════════════════════════════
+
+PUBLIC SITE (imagery-led, agri visual language)
+✅ / Homepage: hero-photo, hex icon grid, family, services,
+AgriMind demo, portal preview, reviews, contact
+✅ /products 8 products, KES/USD toggle, quote request → enquiries
+✅ /about Family story with tractor imagery
+✅ /agrimind Public AgriMind chat demo (8 canned topics)
+✅ /contact Full enquiry form → enquiries table
+✅ /signup Split team/client signup with auto-routing
+✅ /login Team/client login with role-based redirect
+
+TEAM PORTAL (/team/*) — 8 modules, 19 routes, real sidebar layout
+✅ Dashboard Management (chair/cochair) vs Personal (member) view
+✅ Tasks Kanban 5-column, filter tabs, task lifecycle, notes,
+auto-flag at 30%, intervention, review flow
+✅ Projects Portfolio with progress bars, drill-down to tasks
+✅ Clients CRM: list, status filter, add/edit, source tracking
+✅ Enquiries 6-stage pipeline kanban with stage-move buttons
+✅ Proposals Proposal list + create modal, status tracking
+✅ Invoices Create, mark paid (writes to payments), status KPIs
+✅ Expenses Log, approve/reject (approver-only), KPIs
+✅ Cash Flow 30/60/90/180-day forecast with cumulative bar chart
+✅ Compliance Seeded Kenyan obligations, due-date grouping, status
+✅ People Staff list + contracts (KRA/NSSF/SHIF), approve signups
+✅ Leave Request, approve/reject, balance tracking (21-day default)
+✅ Payroll Kenyan PAYE/NSSF/SHIF/Housing auto-calc, approve-only
+✅ Meetings Schedule, upcoming/past, join links
+✅ Messages Multi-thread chat with project/client thread keys
+✅ AgriMind Admin Add documents, source tracking, embed placeholder
+✅ Insights Revenue chart, task health, pipeline, leave KPIs
+✅ Settings Profile edit, pending approvals, invite link generator
+
+CLIENT PORTAL (/client/*) — 6 routes, imagery-led
+✅ Overview Active milestones + recent invoices summary
+✅ Projects Portfolio + drill-down to milestones
+✅ Documents Read-only view of deliverables
+✅ Invoices Read-only + "Pay" coming-soon stubs
+✅ Messages Direct thread with team
+✅ AgriMind Subscriber-access chat
+
+DATABASE — 24 tables, all with RLS
+profiles, tasks, task_notes, task_documents, clock_sessions,
+leave_requests, staff_contracts, payslips, clients, enquiries, proposals,
+reviews, invoices, payments, expenses, compliance_items, meetings, messages,
+notifications, agrimind_documents, agrimind_chunks (pgvector 1536),
+agrimind_queries, kpi_snapshots, audit_log
+
+STORAGE — 3 private buckets with RLS policies
+task-documents, client-documents, agrimind-sources
+Downloads via 60-second signed URLs
+
+EDGE FUNCTIONS — 3 deployed, all graceful-when-secrets-missing
+send-notification-email Resend integration (branded HTML)
+agrimind-embed OpenAI text-embedding-3-small, chunks + stores
+agrimind-query Vector search + GPT-4o-mini RAG with citations
+
+INTEGRATIONS — stubbed in lib/integrations.ts, feature-flagged
+M-Pesa Daraja 🔌 flag: NEXT_PUBLIC_MPESA_ENABLED
+Stripe 🔌 flag: NEXT_PUBLIC_STRIPE_ENABLED
+Resend email ✅ live (works when RESEND_API_KEY set)
+OpenAI RAG 🔌 flag: NEXT_PUBLIC_OPENAI_ENABLED
+
+DESIGN SYSTEM
+
+Master CSS: app/cogas.css (single file, ~900 lines)
+
+Agri palette: --agri-deep/leaf/gold/soil/sky/dark
+
+Imagery-led hero sections with hex overlay
+
+Shared components: Hero, HexGrid, ModuleHero, PortalLayout, ClientLayout,
+AuthGuard, NotificationBell, TaskCard, Toast, EmptyState (11 presets),
+ComingSoon (Badge/Button/Page/Wrapper)
+
+Shared hooks: useProfile, useNotifications, useToast, useCountUp, useScrolled,
+useReveal, useRotatingTz, fmtInTz
+
+═══════════════════════════════════════════════════════════════
+KEY BEHAVIORS
+═══════════════════════════════════════════════════════════════
+
+Task lifecycle: pending_approval → todo → in_progress → in_review → complete
+
+Auto-flag at 30% time remaining + system note + manager notification
+
+Unassigned tasks cannot start (UI blocked)
+
+Time estimate approval required before work begins (chair/cochair only)
+
+Kenyan payroll: PAYE bands 2025, NSSF 6%, SHIF 2.75%, Housing Levy 1.5%,
+Personal relief KSh 2,400
+
+Notifications: in-app bell + optional email, mark read/unread
+
+Client portal is read-only for invoices/docs, chat is bidirectional
+
+Every "coming soon" feature has a modal explaining what's coming
+
+═══════════════════════════════════════════════════════════════
+ENVIRONMENT VARIABLES
+═══════════════════════════════════════════════════════════════
+Required:
+NEXT_PUBLIC_SUPABASE_URL
+NEXT_PUBLIC_SUPABASE_ANON_KEY
+
+Optional (feature flags):
+NEXT_PUBLIC_MPESA_ENABLED=1
+NEXT_PUBLIC_STRIPE_ENABLED=1
+NEXT_PUBLIC_OPENAI_ENABLED=1
+
+Edge function secrets:
+RESEND_API_KEY → enables notification emails
+OPENAI_API_KEY → enables AgriMind RAG
+MPESA_CONSUMER_KEY, MPESA_CONSUMER_SECRET, MPESA_SHORTCODE, MPESA_PASSKEY
+STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET
+
+═══════════════════════════════════════════════════════════════
+WHAT'S STUBBED (real implementation is drop-in)
+═══════════════════════════════════════════════════════════════
+
+M-Pesa STK push → UI shows "coming soon" modal, integration ready
+
+Stripe checkout → UI shows "coming soon" modal, integration ready
+
+Payroll bank payouts → UI shows "coming soon" modal
+
+Auto-embeddings on doc create → manual via /team/agrimind admin
+
+Google Calendar sync → manual meetings only
+
+WhatsApp Business → skipped per user preference (legal/registration)
+
+═══════════════════════════════════════════════════════════════
+IMMEDIATE NEXT STEPS FOR DEPLOYMENT
+═══════════════════════════════════════════════════════════════
+
+Run full schema SQL in Supabase (idempotent)
+
+supabase functions deploy send-notification-email
+
+supabase functions deploy agrimind-embed
+
+supabase functions deploy agrimind-query
+
+Set your account to chair via SQL:
+update public.profiles set is_approved=true, role='chair' where email='...';
+
+Push to GitHub → import to Vercel → set env vars → deploy
+
+Approve team members as they sign up (via /team/people)
+
+Clients sign up at /signup (auto-approved)
+
+Seed AgriMind docs at /team/agrimind when OpenAI key is available
+
+═══════════════════════════════════════════════════════════════
+HOW TO ENABLE EACH INTEGRATION LATER (each is independent)
+═══════════════════════════════════════════════════════════════
+Resend email:
+
+Sign up at resend.com (free tier works)
+
+Get API key
+
+supabase secrets set RESEND_API_KEY="re_..."
+
+Done — notification emails now send automatically
+
+OpenAI (AgriMind RAG):
+
+Sign up at platform.openai.com
+
+Add payment method (~$5 credit is plenty for months)
+
+supabase secrets set OPENAI_API_KEY="sk-..."
+
+Add NEXT_PUBLIC_OPENAI_ENABLED=1 to Vercel env
+
+Documents added at /team/agrimind can now be embedded & queried
+
+Wire "Add Document" modal to call agrimindEmbed(id) after save
+
+M-Pesa (Safaricom Daraja):
+
+Register at developer.safaricom.co.ke
+
+Get sandbox credentials, then apply for production
+
+Create supabase/functions/mpesa-stkpush/index.ts
+
+Create supabase/functions/mpesa-callback/index.ts
+
+Set secrets, add NEXT_PUBLIC_MPESA_ENABLED=1
+
+Update lib/integrations.ts initiateMpesaPayment to call real function
+
+Stripe:
+
+Register business at stripe.com
+
+Create products/prices, get secret key
+
+Create supabase/functions/stripe-checkout/index.ts
+
+Create webhook handler
+
+Set secrets, add NEXT_PUBLIC_STRIPE_ENABLED=1
+
+═══════════════════════════════════════════════════════════════
+DESIGN DECISIONS WORTH REMEMBERING
+═══════════════════════════════════════════════════════════════
+
+Hybrid routing: frequently-used pages (dashboard/tasks/projects) live
+inside /team, everything else gets its own route for shareability
+
+All integrations are behind stubs — no UI breaks when off
+
+Coming soon is a first-class state, not a lie: every unbuilt feature has
+a modal explaining what it does and when it's coming
+
+Every module has its own EmptyState with a sprout illustration
+
+Client portal is client-safe: RLS ensures they see only their rows
+
+Kenyan payroll tax logic is inline, easy to update when KRA changes rates
+
+Notifications are event-driven (insert on action) + email via edge function
+
+AgriMind uses pgvector 1536-dim (OpenAI text-embedding-3-small)
+
+Full RLS on every table, security-definer helpers prevent recursion
+
+═══════════════════════════════════════════════════════════════
+THE 8 MODULES IN THE FINAL PRODUCT VISION
+═══════════════════════════════════════════════════════════════
+
+Client & Sales ✅ CRM, enquiries, proposals, reviews
+
+Project Delivery ✅ Tasks, projects, milestones, documents
+
+Money & Finance ✅ Invoices, payments (manual), expenses, cashflow,
+compliance calendar. ⏳ M-Pesa/Stripe stubs
+
+Team & People ✅ Staff, contracts, leave, payroll (Kenyan)
+
+Communications ✅ Meetings, messages, notifications
+
+Knowledge & AI ✅ AgriMind KB admin + RAG edge functions + public demo
+
+Operations & Compliance ✅ Compliance calendar, audit log foundation
+
+Insights & Control ✅ Business KPIs, revenue, pipeline, task health
+
+═══════════════════════════════════════════════════════════════
+PHASE 6 — VISUAL REFRESH (started, complete)
+═══════════════════════════════════════════════════════════════
+✅ Agri palette from imagery doc integrated
+✅ Photo hero sections with hex overlay
+✅ Hexagon icon grids (homepage, about)
+✅ Growth banner (sprout/coins)
+✅ Module hero bands on client pages
+✅ Empty state sprout illustrations
+✅ Currency toggle, soon badges
+⏳ Lottie/CSS agro animations (wheat, coins, animals, machinery) — future
+⏳ Subtle parallax on hero — future
+⏳ Custom icon set — using emoji for now, easy swap later
+
+═══════════════════════════════════════════════════════════════
+END OF CAPSULE
+═══════════════════════════════════════════════════════════════
