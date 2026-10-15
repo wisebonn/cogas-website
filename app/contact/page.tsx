@@ -6,6 +6,7 @@ import { supabase } from "@/lib/supabaseClient";
 import { useScrolled, useToast } from "@/lib/hooks";
 import { Toast } from "@/components/Toast";
 import { IMG } from "@/lib/images";
+import { CONTACT, whatsappUrl, telUrl, mailtoUrl } from "@/lib/contact";
 
 export default function ContactPage() {
   const navScrolled = useScrolled(40);
@@ -34,7 +35,10 @@ export default function ContactPage() {
         stage: "new",
       });
       if (error) throw error;
-      showToast("Thank you! We'll be in touch within one business day.");
+
+      showToast(
+        "Thank you! Check your email — we've sent you a confirmation with next steps."
+      );
       setName("");
       setEmail("");
       setPhone("");
@@ -81,8 +85,8 @@ export default function ContactPage() {
             </span>
             <h1 style={{ marginTop: 20 }}>Tell us about your project.</h1>
             <p className="lead-hero">
-              A consultant — an actual family member, not a bot — replies within
-              one business day.
+              Pick the channel that suits you — call, WhatsApp, email, or fill the
+              form below. A consultant replies within one business day.
             </p>
           </div>
         </div>
@@ -90,6 +94,121 @@ export default function ContactPage() {
 
       <section>
         <div className="container">
+          {/* Quick contact channels */}
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))",
+              gap: 14,
+              marginBottom: 48,
+            }}
+          >
+            <a
+              href={whatsappUrl()}
+              target="_blank"
+              rel="noopener noreferrer"
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 14,
+                padding: "20px 22px",
+                background: "#fff",
+                border: "1.5px solid var(--line)",
+                borderRadius: 14,
+                transition: "all .2s",
+                textDecoration: "none",
+                color: "inherit",
+              }}
+              className="contact-channel"
+            >
+              <span style={{ fontSize: "1.8rem" }}>💬</span>
+              <div>
+                <b
+                  style={{
+                    display: "block",
+                    fontSize: ".92rem",
+                    color: "var(--ink)",
+                    marginBottom: 2,
+                  }}
+                >
+                  WhatsApp
+                </b>
+                <small style={{ color: "var(--muted)", fontSize: ".8rem" }}>
+                  {CONTACT.primaryPhoneDisplay}
+                </small>
+              </div>
+            </a>
+
+            <a
+              href={telUrl()}
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 14,
+                padding: "20px 22px",
+                background: "#fff",
+                border: "1.5px solid var(--line)",
+                borderRadius: 14,
+                transition: "all .2s",
+                textDecoration: "none",
+                color: "inherit",
+              }}
+              className="contact-channel"
+            >
+              <span style={{ fontSize: "1.8rem" }}>📞</span>
+              <div>
+                <b
+                  style={{
+                    display: "block",
+                    fontSize: ".92rem",
+                    color: "var(--ink)",
+                    marginBottom: 2,
+                  }}
+                >
+                  Call us
+                </b>
+                <small style={{ color: "var(--muted)", fontSize: ".8rem" }}>
+                  {CONTACT.primaryPhoneDisplay}
+                </small>
+              </div>
+            </a>
+
+            <a
+              href={mailtoUrl()}
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 14,
+                padding: "20px 22px",
+                background: "#fff",
+                border: "1.5px solid var(--line)",
+                borderRadius: 14,
+                transition: "all .2s",
+                textDecoration: "none",
+                color: "inherit",
+              }}
+              className="contact-channel"
+            >
+              <span style={{ fontSize: "1.8rem" }}>✉️</span>
+              <div>
+                <b
+                  style={{
+                    display: "block",
+                    fontSize: ".92rem",
+                    color: "var(--ink)",
+                    marginBottom: 2,
+                  }}
+                >
+                  Email
+                </b>
+                <small style={{ color: "var(--muted)", fontSize: ".8rem" }}>
+                  {CONTACT.primaryEmail}
+                </small>
+              </div>
+            </a>
+          </div>
+
+          {/* Form + info */}
           <div
             style={{
               display: "grid",
@@ -97,9 +216,10 @@ export default function ContactPage() {
               gap: 44,
               alignItems: "start",
             }}
+            className="contact-grid"
           >
             <div>
-              <span className="eyebrow">Why talk to us</span>
+              <span className="eyebrow">Or send a written enquiry</span>
               <h2 className="section-title">A conversation beats a form.</h2>
               <p className="lead">
                 Every project starts with a free discovery call. We scope the
@@ -111,22 +231,38 @@ export default function ContactPage() {
                 <div className="feat">
                   <span className="dot">01</span>
                   <div>
-                    <b>Free discovery call</b>
-                    <span>30 minutes, no obligation.</span>
+                    <b>You submit an enquiry</b>
+                    <span>
+                      Fill the form or reach us directly via WhatsApp, call, or
+                      email.
+                    </span>
                   </div>
                 </div>
                 <div className="feat">
                   <span className="dot">02</span>
                   <div>
-                    <b>Fixed-scope quote</b>
-                    <span>Clear deliverables, clear price, in writing.</span>
+                    <b>We confirm within minutes</b>
+                    <span>
+                      You'll receive an automatic email confirming we got it —
+                      plus what happens next.
+                    </span>
                   </div>
                 </div>
                 <div className="feat">
                   <span className="dot">03</span>
                   <div>
-                    <b>Real-time tracking</b>
-                    <span>Your own portal from day one.</span>
+                    <b>A consultant reaches out</b>
+                    <span>Within one business day, by call or email — your choice.</span>
+                  </div>
+                </div>
+                <div className="feat">
+                  <span className="dot">04</span>
+                  <div>
+                    <b>Fixed-scope proposal</b>
+                    <span>
+                      Clear deliverables, clear price, in writing. Trackable in
+                      your own portal.
+                    </span>
                   </div>
                 </div>
               </div>
@@ -227,7 +363,8 @@ export default function ContactPage() {
                   marginTop: 4,
                 }}
               >
-                We never share your details. Reply within one business day.
+                You'll get a confirmation email immediately. Reply within one
+                business day.
               </p>
             </form>
           </div>
@@ -242,6 +379,19 @@ export default function ContactPage() {
           </div>
         </div>
       </footer>
+
+      <style jsx>{`
+        :global(.contact-channel:hover) {
+          border-color: #a3e635 !important;
+          transform: translateY(-3px);
+          box-shadow: 0 20px 50px -20px rgba(4, 23, 14, 0.25);
+        }
+        @media (max-width: 900px) {
+          :global(.contact-grid) {
+            grid-template-columns: 1fr !important;
+          }
+        }
+      `}</style>
 
       <Toast message={toastMsg} />
     </>

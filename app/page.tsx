@@ -657,13 +657,18 @@ export default function HomePage() {
           </div>
 
           <div className="foot-bottom">
-            <span>© 2026 COGAs Consultancy. A family business.</span>
-            <span>Built with ❤️ by the engineering sibling.</span>
-          </div>
-        </div>
-      </footer>
+  <span>© 2026 COGAs Consultancy. A family business.</span>
+  <span style={{ display: "flex", gap: 16 }}>
+    <a href="https://wa.me/254722768745" target="_blank" rel="noopener noreferrer">
+      💬 WhatsApp
+    </a>
+    <a href="mailto:bonventurep@gmail.com">✉️ Email</a>
+  </span>
+</div>
+</div>
+</footer>
 
-      <Toast message={toastMsg} />
+<Toast message={toastMsg} />
     </>
   );
 }

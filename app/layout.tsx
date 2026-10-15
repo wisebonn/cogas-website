@@ -1,14 +1,13 @@
 import type { Metadata } from "next";
-import { Fraunces, Inter } from "next/font/google";
-import "./globals.css";
 import "./cogas.css";
 
-const fraunces = Fraunces({ subsets: ["latin"], variable: "--font-fraunces" });
-const inter = Inter({ subsets: ["latin"], variable: "--font-inter" });
-
 export const metadata: Metadata = {
-  title: "COGAs Consultancy — Intelligence for Agribusiness",
-  description: "COGAs Consultancy: family-run agribusiness consultancy combining agro-economics, actuarial science, digital marketing, engineering and logistics expertise.",
+  title: "COGAs Consultancy — Agribusiness Consulting",
+  description:
+    "Family-run agri-consultancy. Feasibility studies, agricultural research, actuarial risk, supply chain and digital solutions — under one roof.",
+  icons: {
+    icon: "/favicon.ico",
+  },
 };
 
 export default function RootLayout({
@@ -18,9 +17,7 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en">
-      <body className={`${fraunces.variable} ${inter.variable}`}>
-        {children}
-      </body>
+      <body>{children}</body>
     </html>
   );
 }
